@@ -1,19 +1,37 @@
-# Database Schema Plan
+# Database Schema
 ## Link2Itinerary
 
-**Version:** 1.0 (Draft)
-**Date:** [To be filled]
-**Database:** PostgreSQL
+**Version:** 2.0 (Final — as implemented)
+**Database:** PostgreSQL (hosted via Supabase)
+**Designed and implemented by:** Kateryna Hrishina, with support from Betty Phipps
 
 ---
 
-## 1. Overview
+## Overview
 
-This document outlines the planned database schema for Link2Itinerary, including tables, relationships, and key constraints.
+The database has 9 tables. The 7 core tables store trip data, itinerary structure, activities, and cost estimates. Two additional tables support the caching layer (teaser and full itinerary results from OpenAI), and one table stores user accounts.
 
-### High-Level Entity Relationships
+Tables are created automatically by TypeORM on server startup (`synchronize: true` in development).
+
+### Entity Relationships
 
 ```
+users
+  ↓ 1:N (via userId on cache tables)
+teaser_cache / itinerary_cache
+
+trip_seeds
+  ↓ 1:1
+preferences
+
+trip_seeds
+  ↓ 1:1
+teaser_cache   (one cached teaser per trip seed)
+
+trip_seeds
+  ↓ 1:N
+itinerary_cache  (one row per trip seed + preferences combination)
+
 trip_seeds
   ↓ 1:N
 itineraries
@@ -21,23 +39,30 @@ itineraries
 itinerary_days
   ↓ 1:N
 activities
+  ↑ N:1
+locations
 
-trip_seeds → preferences (1:1)
 itineraries → cost_estimates (1:1)
-activities → locations (N:1)
 ```
 
 ---
 
-## 2. Tables
+## Tables
 
-### 2.1 users (Future - Not MVP)
+### users
 
-**Note:** User authentication is not part of MVP. This table will be added in future iterations when user accounts are implemented.
+Stores registered user accounts.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| id | UUID | PRIMARY KEY | Unique user ID |
+| username | VARCHAR(255) | NOT NULL, UNIQUE | Login username |
+| password_hash | TEXT | NOT NULL | bcrypt-hashed password |
+| created_at | TIMESTAMP | DEFAULT NOW() | Registration time |
 
 ---
 
-### 2.2 trip_seeds
+### trip_seeds
 
 Stores initial trip information from user-provided links.
 
@@ -51,79 +76,76 @@ Stores initial trip information from user-provided links.
 | check_out | DATE | NOT NULL | Trip end date |
 | accommodation_name | VARCHAR(255) | | Extracted accommodation name |
 | accommodation_type | VARCHAR(50) | | Type (e.g., "airbnb", "hotel") |
-| metadata | JSONB | | Additional extracted data (flexible) |
-| status | VARCHAR(50) | DEFAULT 'seed_created' | Status: seed_created, teaser_generated, itinerary_generated |
+| metadata | JSONB | | Additional extracted data |
+| status | VARCHAR(50) | DEFAULT 'seed_created' | seed_created, teaser_generated, itinerary_generated |
 | created_at | TIMESTAMP | DEFAULT NOW() | Creation time |
 | updated_at | TIMESTAMP | DEFAULT NOW() | Last update time |
 
-**Indexes:**
-- `idx_trip_seeds_created_at` on `created_at`
-
-**Sample Data:**
-```json
-{
-  "id": "550e8400-e29b-41d4-a716-446655440000",
-  "url": "https://airbnb.com/rooms/12345",
-  "summary": "Weekend getaway to Paris",
-  "location": "Paris, France",
-  "check_in": "2026-05-01",
-  "check_out": "2026-05-05",
-  "accommodation_name": "Charming apartment in Le Marais",
-  "accommodation_type": "airbnb",
-  "metadata": {
-    "source_html_snippet": "...",
-    "images": ["url1", "url2"]
-  },
-  "status": "seed_created"
-}
-```
-
 ---
 
-### 2.3 preferences
+### preferences
 
 Stores user preferences for itinerary generation (one per trip seed).
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
 | id | UUID | PRIMARY KEY | Unique preference ID |
-| trip_seed_id | UUID | FOREIGN KEY (trip_seeds.id), UNIQUE | Associated trip seed |
+| trip_seed_id | UUID | FK (trip_seeds.id), UNIQUE | Associated trip seed |
 | interests | TEXT[] | | Array of interests (e.g., ["museums", "food"]) |
 | budget_tier | VARCHAR(50) | DEFAULT 'moderate' | budget, moderate, luxury |
 | travel_pace | VARCHAR(50) | DEFAULT 'relaxed' | relaxed, moderate, packed |
-| dietary_restrictions | TEXT[] | | Array of dietary needs (e.g., ["vegetarian"]) |
-| accessibility_needs | TEXT[] | | Array of accessibility requirements |
+| dietary_restrictions | TEXT[] | | Dietary needs |
+| accessibility_needs | TEXT[] | | Accessibility requirements |
 | additional_notes | TEXT | | Free-form user notes |
 | created_at | TIMESTAMP | DEFAULT NOW() | Creation time |
 | updated_at | TIMESTAMP | DEFAULT NOW() | Last update time |
 
-**Indexes:**
-- `idx_preferences_trip_seed_id` on `trip_seed_id`
+---
 
-**Sample Data:**
-```json
-{
-  "id": "660e8400-e29b-41d4-a716-446655440001",
-  "trip_seed_id": "550e8400-e29b-41d4-a716-446655440000",
-  "interests": ["museums", "food", "architecture"],
-  "budget_tier": "moderate",
-  "travel_pace": "relaxed",
-  "dietary_restrictions": [],
-  "accessibility_needs": [],
-  "additional_notes": "Prefer walking over public transport"
-}
-```
+### teaser_cache
+
+Caches the teaser (3-day overview) generated by OpenAI for a given trip seed. One row per trip seed — regenerating overwrites the existing row (upsert).
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| id | UUID | PRIMARY KEY | Unique cache entry ID |
+| trip_seed_id | UUID | FK (trip_seeds.id), UNIQUE | Associated trip seed |
+| payload | JSONB | NOT NULL | Full PlannerTeaserResponse as returned by planner service |
+| user_id | UUID | NULLABLE | User who generated the teaser (null if anonymous) |
+| generated_at | TIMESTAMP | | When OpenAI produced this teaser |
+| created_at | TIMESTAMP | DEFAULT NOW() | Row creation time |
 
 ---
 
-### 2.4 itineraries
+### itinerary_cache
+
+Caches full itineraries generated by OpenAI. Keyed by trip seed + a SHA-256 hash of the preferences object — each unique preferences combination gets its own cached row.
+
+| Column | Type | Constraints | Description |
+|--------|------|-------------|-------------|
+| id | UUID | PRIMARY KEY | Matches the itinerary ID returned by the planner |
+| trip_seed_id | UUID | FK (trip_seeds.id) | Associated trip seed |
+| preferences_hash | VARCHAR(64) | NOT NULL | SHA-256 hash of the serialized preferences |
+| preferences | JSONB | NOT NULL | Full preferences object used to generate this itinerary |
+| payload | JSONB | NOT NULL | Full PlannerFullItineraryResponse |
+| cost_estimate | JSONB | NULLABLE | CostEstimateResponse calculated at generation time |
+| user_id | UUID | NULLABLE | User who owns this itinerary |
+| saved_at | TIMESTAMP | NULLABLE | Set when user clicks "Add to My Itineraries" |
+| generated_at | TIMESTAMP | | When OpenAI produced this itinerary |
+| created_at | TIMESTAMP | DEFAULT NOW() | Row creation time |
+
+**Unique constraint:** `(trip_seed_id, preferences_hash)`
+
+---
+
+### itineraries
 
 Stores generated itineraries (teasers and full plans).
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
 | id | UUID | PRIMARY KEY | Unique itinerary ID |
-| trip_seed_id | UUID | FOREIGN KEY (trip_seeds.id) | Associated trip seed |
+| trip_seed_id | UUID | FK (trip_seeds.id) | Associated trip seed |
 | type | VARCHAR(50) | NOT NULL | teaser, full |
 | status | VARCHAR(50) | DEFAULT 'generating' | generating, completed, failed |
 | total_activities | INT | | Total number of activities |
@@ -134,369 +156,164 @@ Stores generated itineraries (teasers and full plans).
 | created_at | TIMESTAMP | DEFAULT NOW() | Creation time |
 | updated_at | TIMESTAMP | DEFAULT NOW() | Last update time |
 
-**Indexes:**
-- `idx_itineraries_trip_seed_id` on `trip_seed_id`
-
-**Sample Data:**
-```json
-{
-  "id": "770e8400-e29b-41d4-a716-446655440002",
-  "trip_seed_id": "550e8400-e29b-41d4-a716-446655440000",
-  "type": "full",
-  "status": "completed",
-  "total_activities": 15,
-  "estimated_cost_min": 480,
-  "estimated_cost_max": 620,
-  "currency": "USD",
-  "generated_at": "2026-01-18T10:05:00Z"
-}
-```
-
 ---
 
-### 2.5 itinerary_days
+### itinerary_days
 
 Stores individual days within an itinerary.
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
 | id | UUID | PRIMARY KEY | Unique day ID |
-| itinerary_id | UUID | FOREIGN KEY (itineraries.id) | Associated itinerary |
+| itinerary_id | UUID | FK (itineraries.id) | Associated itinerary |
 | date | DATE | NOT NULL | Date of this day |
 | day_number | INT | NOT NULL | Day number (1, 2, 3, ...) |
 | theme | VARCHAR(255) | | Daily theme (e.g., "Museums & Culture") |
-| highlights | TEXT[] | | Array of highlights (for teaser) |
+| highlights | TEXT[] | | Array of highlights |
 | daily_cost_estimate | DECIMAL(10,2) | | Total cost for this day |
 | created_at | TIMESTAMP | DEFAULT NOW() | Creation time |
 
-**Indexes:**
-- `idx_itinerary_days_itinerary_id` on `itinerary_id`
-- `idx_itinerary_days_date` on `itinerary_id, date` (composite)
-
-**Constraints:**
-- Unique constraint on `(itinerary_id, day_number)`
-
-**Sample Data:**
-```json
-{
-  "id": "880e8400-e29b-41d4-a716-446655440003",
-  "itinerary_id": "770e8400-e29b-41d4-a716-446655440002",
-  "date": "2026-05-01",
-  "day_number": 1,
-  "theme": "Arrival & Local Exploration",
-  "highlights": ["Check-in", "Seine River walk", "Dinner at bistro"],
-  "daily_cost_estimate": 45
-}
-```
+**Unique constraint:** `(itinerary_id, day_number)`
 
 ---
 
-### 2.6 activities
+### activities
 
 Stores individual activities within a day.
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
 | id | UUID | PRIMARY KEY | Unique activity ID |
-| itinerary_day_id | UUID | FOREIGN KEY (itinerary_days.id) | Associated day |
-| sequence_order | INT | NOT NULL | Order within the day (1, 2, 3, ...) |
-| time | TIME | NOT NULL | Start time (e.g., "14:00") |
+| itinerary_day_id | UUID | FK (itinerary_days.id) | Associated day |
+| sequence_order | INT | NOT NULL | Order within the day |
+| time | TIME | NOT NULL | Start time |
 | duration | INT | NOT NULL | Duration in minutes |
 | title | VARCHAR(255) | NOT NULL | Activity title |
 | description | TEXT | | Detailed description |
-| category | VARCHAR(50) | | Category: accommodation, dining, sightseeing, transport, etc. |
-| location_id | UUID | FOREIGN KEY (locations.id) | Associated location (nullable) |
-| estimated_cost | DECIMAL(10,2) | DEFAULT 0 | Cost estimate for this activity |
-| booking_url | TEXT | | Link to book/reserve (if available) |
-| tips | TEXT[] | | Array of tips (e.g., ["Bring camera", "Reserve ahead"]) |
+| category | VARCHAR(50) | | accommodation, dining, sightseeing, transport, etc. |
+| location_id | UUID | FK (locations.id), NULLABLE | Associated location |
+| estimated_cost | DECIMAL(10,2) | DEFAULT 0 | Cost estimate |
+| booking_url | TEXT | | Link to book/reserve |
+| tips | TEXT[] | | Array of tips |
 | metadata | JSONB | | Additional flexible data |
 | created_at | TIMESTAMP | DEFAULT NOW() | Creation time |
 
-**Indexes:**
-- `idx_activities_itinerary_day_id` on `itinerary_day_id`
-- `idx_activities_sequence` on `itinerary_day_id, sequence_order` (composite)
-
-**Constraints:**
-- Unique constraint on `(itinerary_day_id, sequence_order)`
-
-**Sample Data:**
-```json
-{
-  "id": "990e8400-e29b-41d4-a716-446655440004",
-  "itinerary_day_id": "880e8400-e29b-41d4-a716-446655440003",
-  "sequence_order": 1,
-  "time": "14:00",
-  "duration": 60,
-  "title": "Check-in at Le Marais Apartment",
-  "description": "Arrive at your accommodation, settle in, and get oriented.",
-  "category": "accommodation",
-  "location_id": "aa0e8400-e29b-41d4-a716-446655440005",
-  "estimated_cost": 0,
-  "booking_url": null,
-  "tips": [],
-  "metadata": {}
-}
-```
+**Unique constraint:** `(itinerary_day_id, sequence_order)`
 
 ---
 
-### 2.7 locations
+### locations
 
-Stores location information (reusable across activities).
+Reusable location data referenced by activities.
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
 | id | UUID | PRIMARY KEY | Unique location ID |
-| name | VARCHAR(255) | NOT NULL | Location name (e.g., "Louvre Museum") |
+| name | VARCHAR(255) | NOT NULL | Location name |
 | address | TEXT | | Full address |
 | city | VARCHAR(100) | | City name |
 | country | VARCHAR(100) | | Country name |
 | latitude | DECIMAL(9,6) | | Latitude coordinate |
 | longitude | DECIMAL(9,6) | | Longitude coordinate |
-| place_type | VARCHAR(50) | | Type: restaurant, museum, hotel, landmark, etc. |
-| metadata | JSONB | | Additional data (hours, phone, website) |
+| place_type | VARCHAR(50) | | restaurant, museum, hotel, landmark, etc. |
+| metadata | JSONB | | Additional data (hours, website, etc.) |
 | created_at | TIMESTAMP | DEFAULT NOW() | Creation time |
-
-**Indexes:**
-- `idx_locations_name` on `name`
-- `idx_locations_coords` on `latitude, longitude` (for proximity searches)
-
-**Sample Data:**
-```json
-{
-  "id": "aa0e8400-e29b-41d4-a716-446655440005",
-  "name": "Louvre Museum",
-  "address": "Rue de Rivoli, 75001 Paris",
-  "city": "Paris",
-  "country": "France",
-  "latitude": 48.8606,
-  "longitude": 2.3376,
-  "place_type": "museum",
-  "metadata": {
-    "opening_hours": "9:00-18:00",
-    "website": "https://www.louvre.fr"
-  }
-}
-```
 
 ---
 
-### 2.8 cost_estimates
+### cost_estimates
 
 Stores detailed cost breakdowns for itineraries.
 
 | Column | Type | Constraints | Description |
 |--------|------|-------------|-------------|
 | id | UUID | PRIMARY KEY | Unique estimate ID |
-| itinerary_id | UUID | FOREIGN KEY (itineraries.id), UNIQUE | Associated itinerary |
+| itinerary_id | UUID | FK (itineraries.id), UNIQUE | Associated itinerary |
 | total_min | DECIMAL(10,2) | NOT NULL | Total minimum cost |
 | total_max | DECIMAL(10,2) | NOT NULL | Total maximum cost |
 | total_average | DECIMAL(10,2) | | Average cost |
-| dining_min | DECIMAL(10,2) | DEFAULT 0 | Dining category min |
-| dining_max | DECIMAL(10,2) | DEFAULT 0 | Dining category max |
-| activities_min | DECIMAL(10,2) | DEFAULT 0 | Activities category min |
-| activities_max | DECIMAL(10,2) | DEFAULT 0 | Activities category max |
-| transportation_min | DECIMAL(10,2) | DEFAULT 0 | Transport category min |
-| transportation_max | DECIMAL(10,2) | DEFAULT 0 | Transport category max |
-| shopping_min | DECIMAL(10,2) | DEFAULT 0 | Shopping category min |
-| shopping_max | DECIMAL(10,2) | DEFAULT 0 | Shopping category max |
-| miscellaneous_min | DECIMAL(10,2) | DEFAULT 0 | Misc category min |
-| miscellaneous_max | DECIMAL(10,2) | DEFAULT 0 | Misc category max |
+| dining_min/max | DECIMAL(10,2) | DEFAULT 0 | Dining category |
+| activities_min/max | DECIMAL(10,2) | DEFAULT 0 | Activities category |
+| transportation_min/max | DECIMAL(10,2) | DEFAULT 0 | Transport category |
+| shopping_min/max | DECIMAL(10,2) | DEFAULT 0 | Shopping category |
+| miscellaneous_min/max | DECIMAL(10,2) | DEFAULT 0 | Misc category |
 | currency | VARCHAR(10) | DEFAULT 'USD' | Currency code |
 | calculated_at | TIMESTAMP | DEFAULT NOW() | Calculation time |
 
-**Indexes:**
-- `idx_cost_estimates_itinerary_id` on `itinerary_id`
+---
 
-**Sample Data:**
-```json
-{
-  "id": "bb0e8400-e29b-41d4-a716-446655440006",
-  "itinerary_id": "770e8400-e29b-41d4-a716-446655440002",
-  "total_min": 480,
-  "total_max": 620,
-  "total_average": 550,
-  "dining_min": 180,
-  "dining_max": 240,
-  "activities_min": 150,
-  "activities_max": 180,
-  "transportation_min": 50,
-  "transportation_max": 70,
-  "shopping_min": 50,
-  "shopping_max": 80,
-  "miscellaneous_min": 50,
-  "miscellaneous_max": 50,
-  "currency": "USD"
-}
+## Entity-Relationship Diagram
+
+```
+┌──────────┐       ┌──────────────┐
+│  users   │       │ trip_seeds   │◄──────────┐
+└──────┬───┘       ├──────────────┤    1:1    │
+       │           │ id (PK)      │           │
+       │ 1:N       │ url          │    ┌──────┴─────┐
+       │           │ location     │    │preferences │
+       ▼           │ check_in     │    └────────────┘
+ teaser_cache      │ check_out    │
+ itinerary_cache   │ status       │
+ (userId col)      └──────┬───────┘
+                          │
+              ┌───────────┼───────────┐
+              │ 1:1       │ 1:N       │ 1:N
+              ▼           ▼           ▼
+       teaser_cache  itinerary_  itinerary_
+                     cache       cache
+                     (trip+prefs (trip+prefs
+                      combo)      combo)
+                          │
+                          │ (separately)
+                          ▼
+                    ┌─────────────┐      ┌────────────────┐
+                    │ itineraries │◄─────┤ cost_estimates │
+                    └──────┬──────┘ 1:1  └────────────────┘
+                           │ 1:N
+                           ▼
+                    ┌────────────────┐
+                    │ itinerary_days │
+                    └────────┬───────┘
+                             │ 1:N
+                             ▼
+                    ┌───────────┐
+                    │activities │
+                    └─────┬─────┘
+                          │ N:1
+                          ▼
+                    ┌───────────┐
+                    │ locations │
+                    └───────────┘
 ```
 
 ---
 
-## 3. Relationships Summary
+## Design Decisions
 
-### One-to-Many (1:N)
-- `trip_seeds → itineraries` (one seed can have one itinerary)
-- `itineraries → itinerary_days`
-- `itinerary_days → activities`
-- `locations → activities` (one location can be used by many activities)
+### UUID Primary Keys
+All tables use UUIDs to prevent enumeration attacks on public endpoints and to simplify data merging.
 
-### One-to-One (1:1)
-- `trip_seeds → preferences` (each seed has one preference set)
-- `itineraries → cost_estimates` (each itinerary has one cost breakdown)
+### Caching Strategy
+The teaser and full itinerary caches are the primary storage mechanism for generated content. The `teaser_cache` is a simple 1:1 per trip seed (one teaser, overwritten on regeneration). The `itinerary_cache` uses a SHA-256 hash of the preferences object as a secondary key — so the same trip with different preferences gets a fresh generation, while the same trip + same preferences is served from cache without an OpenAI call.
 
----
+### JSONB for Payload Fields
+Generated itinerary payloads are stored as JSONB rather than normalized into separate rows. This avoids overly complex write logic during generation and makes the full response directly readable from a single row.
 
-## 4. Entity-Relationship Diagram (ERD)
-
-**Planned Tool:** draw.io or dbdiagram.io
-
-**Placeholder Description:**
-```
-┌────────────┐       ┌─────────────┐
-│ trip_seeds │◄──────┤ preferences │
-└─────┬──────┘ 1:1   └─────────────┘
-      │ 1:N
-      ▼
-┌─────────────┐      ┌────────────────┐
-│ itineraries │◄─────┤ cost_estimates │
-└──────┬──────┘ 1:1  └────────────────┘
-       │ 1:N
-       ▼
-┌────────────────┐
-│ itinerary_days │
-└────────┬───────┘
-         │ 1:N
-         ▼
-┌───────────┐
-│ activities│
-└─────┬─────┘
-      │ N:1
-      ▼
-┌───────────┐
-│ locations │
-└───────────┘
-```
-
-**To be created:** Visual ERD diagram (image or link)
+### Row-Level Security
+Enforced in application code via JWT guards on protected routes. The `userId` column on cache tables links itineraries to their owner.
 
 ---
 
-## 5. Data Types & Constraints
-
-### UUID vs. Auto-increment IDs
-- **Decision:** Use UUIDs for all primary keys
-- **Rationale:**
-  - Prevents enumeration attacks on public endpoints
-  - Easier to merge data from multiple sources
-  - No coordination needed for distributed systems (future)
-
-### Timestamps
-- **created_at:** Automatically set on insert
-- **updated_at:** Automatically updated on modify (via trigger or ORM)
-
-### JSONB for Flexibility
-- Use JSONB for `metadata` fields where schema may evolve
-- Allows flexibility without frequent migrations
-- PostgreSQL indexes on JSONB for performance
-
-### Enums vs. VARCHAR
-- Use VARCHAR for status fields (easier to extend)
-- Document valid values in code/docs
-
----
-
-## 6. Indexing Strategy
-
-### Primary Indexes
-- All primary keys (id) automatically indexed
-
-### Foreign Key Indexes
-- All foreign keys indexed for join performance
-
-### Query-specific Indexes
-- `trip_seeds.created_at` for recent trips query
-- `locations.latitude, locations.longitude` for proximity searches
-
----
-
-## 7. Sample Queries
-
-### Get Trip Seed with Itinerary
-```sql
-SELECT ts.*, i.*, p.*
-FROM trip_seeds ts
-LEFT JOIN preferences p ON ts.id = p.trip_seed_id
-LEFT JOIN itineraries i ON ts.id = i.trip_seed_id
-WHERE ts.id = '550e8400-e29b-41d4-a716-446655440000';
-```
-
-### Get Full Itinerary with Activities
-```sql
-SELECT i.*, d.*, a.*, l.*
-FROM itineraries i
-JOIN itinerary_days d ON i.id = d.itinerary_id
-JOIN activities a ON d.id = a.itinerary_day_id
-LEFT JOIN locations l ON a.location_id = l.id
-WHERE i.id = '770e8400-e29b-41d4-a716-446655440002'
-ORDER BY d.day_number, a.sequence_order;
-```
-
-
----
-
-## 8. Migrations Plan
-
-### Migration Strategy
-- Use TypeORM or Prisma migrations
-- Version-controlled migration files
-- Separate migrations for schema changes
-
-### Planned Migrations
-1. **Initial schema:** Create all tables
-2. **Indexes:** Add performance indexes
-3. **Future:** Add users table when auth is implemented
-
----
-
-## 9. Data Seeding (for Testing)
-
-### Seed Data
-- 3-5 sample trip seeds with realistic data
-- 2 full itineraries with activities
-- Sample locations in Paris, Tokyo, NYC
-
-### Seeding Script
-- SQL file: `db/seeds/initial-data.sql`
-- Or ORM seeding script (e.g., `npm run seed`)
-
----
-
-## 10. Backup & Maintenance
-
-### Backup Strategy (Future)
-- Daily automated backups of PostgreSQL database
-- Retention: 7 days for MVP, longer for production
-
-### Maintenance Tasks
-- Archive old trip seeds (if user accounts added in future)
-
----
-
-## 11. Security Considerations
-
-### Data Protection
-- SQL injection prevention via parameterized queries (ORM handles this)
-
-### Access Control
-- For MVP: No user authentication, limited security
-- Future: Row-level security (RLS) to ensure users only access their trips
-
----
-
-## Appendix A: SQL Schema (Draft)
+## SQL Schema
 
 ```sql
--- Trip seeds
+CREATE TABLE users (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  username VARCHAR(255) NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
 CREATE TABLE trip_seeds (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   url TEXT NOT NULL,
@@ -512,7 +329,6 @@ CREATE TABLE trip_seeds (
   updated_at TIMESTAMP DEFAULT NOW()
 );
 
--- Preferences
 CREATE TABLE preferences (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   trip_seed_id UUID REFERENCES trip_seeds(id) ON DELETE CASCADE UNIQUE,
@@ -526,7 +342,29 @@ CREATE TABLE preferences (
   updated_at TIMESTAMP DEFAULT NOW()
 );
 
--- Itineraries
+CREATE TABLE teaser_cache (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  trip_seed_id UUID REFERENCES trip_seeds(id) ON DELETE CASCADE UNIQUE,
+  payload JSONB NOT NULL,
+  user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+  generated_at TIMESTAMP WITH TIME ZONE,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE itinerary_cache (
+  id UUID PRIMARY KEY,
+  trip_seed_id UUID REFERENCES trip_seeds(id) ON DELETE CASCADE,
+  preferences_hash VARCHAR(64) NOT NULL,
+  preferences JSONB NOT NULL,
+  payload JSONB NOT NULL,
+  cost_estimate JSONB,
+  user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+  saved_at TIMESTAMP WITH TIME ZONE,
+  generated_at TIMESTAMP WITH TIME ZONE,
+  created_at TIMESTAMP DEFAULT NOW(),
+  UNIQUE(trip_seed_id, preferences_hash)
+);
+
 CREATE TABLE itineraries (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   trip_seed_id UUID REFERENCES trip_seeds(id) ON DELETE CASCADE,
@@ -541,7 +379,6 @@ CREATE TABLE itineraries (
   updated_at TIMESTAMP DEFAULT NOW()
 );
 
--- Itinerary days
 CREATE TABLE itinerary_days (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   itinerary_id UUID REFERENCES itineraries(id) ON DELETE CASCADE,
@@ -554,7 +391,6 @@ CREATE TABLE itinerary_days (
   UNIQUE(itinerary_id, day_number)
 );
 
--- Locations
 CREATE TABLE locations (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   name VARCHAR(255) NOT NULL,
@@ -568,7 +404,6 @@ CREATE TABLE locations (
   created_at TIMESTAMP DEFAULT NOW()
 );
 
--- Activities
 CREATE TABLE activities (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   itinerary_day_id UUID REFERENCES itinerary_days(id) ON DELETE CASCADE,
@@ -587,7 +422,6 @@ CREATE TABLE activities (
   UNIQUE(itinerary_day_id, sequence_order)
 );
 
--- Cost estimates
 CREATE TABLE cost_estimates (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   itinerary_id UUID REFERENCES itineraries(id) ON DELETE CASCADE UNIQUE,
@@ -607,67 +441,4 @@ CREATE TABLE cost_estimates (
   currency VARCHAR(10) DEFAULT 'USD',
   calculated_at TIMESTAMP DEFAULT NOW()
 );
-
--- Indexes
-CREATE INDEX idx_trip_seeds_created_at ON trip_seeds(created_at);
-CREATE INDEX idx_preferences_trip_seed_id ON preferences(trip_seed_id);
-CREATE INDEX idx_itineraries_trip_seed_id ON itineraries(trip_seed_id);
-CREATE INDEX idx_itinerary_days_itinerary_id ON itinerary_days(itinerary_id);
-CREATE INDEX idx_activities_itinerary_day_id ON activities(itinerary_day_id);
-CREATE INDEX idx_locations_name ON locations(name);
-CREATE INDEX idx_locations_coords ON locations(latitude, longitude);
-CREATE INDEX idx_cost_estimates_itinerary_id ON cost_estimates(itinerary_id);
 ```
-
----
-
-## Appendix B: TypeORM Entities (Example)
-
-```typescript
-// Example: TripSeed entity
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, OneToMany } from 'typeorm';
-
-@Entity('trip_seeds')
-export class TripSeed {
-  @PrimaryGeneratedColumn('uuid')
-  id: string;
-
-  @Column({ type: 'text' })
-  url: string;
-
-  @Column({ type: 'text', nullable: true })
-  summary: string;
-
-  @Column({ type: 'varchar', length: 255 })
-  location: string;
-
-  @Column({ type: 'date' })
-  checkIn: Date;
-
-  @Column({ type: 'date' })
-  checkOut: Date;
-
-  @Column({ type: 'varchar', length: 255, nullable: true })
-  accommodationName: string;
-
-  @Column({ type: 'varchar', length: 50, nullable: true })
-  accommodationType: string;
-
-  @Column({ type: 'jsonb', nullable: true })
-  metadata: object;
-
-  @Column({ type: 'varchar', length: 50, default: 'seed_created' })
-  status: string;
-
-  @OneToMany(() => Itinerary, itinerary => itinerary.tripSeed)
-  itineraries: Itinerary[];
-
-  @CreateDateColumn()
-  createdAt: Date;
-
-  @UpdateDateColumn()
-  updatedAt: Date;
-}
-```
-
-(Additional entities would follow similar pattern)

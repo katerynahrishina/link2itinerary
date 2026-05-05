@@ -1,174 +1,163 @@
-# Backend - Link2Itinerary API
+# Backend — Link2Itinerary API
 
-**About this file:** This README explains the backend API server for Link2Itinerary. It describes how the server is organized into modules (Trips, Planner, and Estimator), what API endpoints are available, how the system integrates with OpenAI to generate itineraries, and how to set up and run the backend. If you're working on the API, database, or LLM integration, this is your starting point.
+NestJS REST API server for Link2Itinerary, handling authentication, trip management, LLM-powered itinerary generation, cost estimation, and data persistence via Supabase PostgreSQL.
 
-NestJS-based REST API server for Link2Itinerary, handling LLM integration, trip planning, cost estimation, and data persistence.
+## Architecture
 
-## Planned Architecture
+The backend is organized into five NestJS feature modules plus two caching modules:
 
-### Modules
+| Module | Routes | Purpose | Built by |
+|--------|--------|---------|----------|
+| **Auth** | `/api/auth` | User registration and login (bcrypt + JWT) | Kateryna Hrishina |
+| **Trips** | `/api/trips` | Trip seed CRUD (create, read, update, delete) | Kateryna Hrishina, Betty Phipps |
+| **Planner** | `/api/planner` | Teaser and full itinerary generation via OpenAI | Jakob Midthun |
+| **Estimator** | `/api/estimator` | Cost calculation from saved itinerary data | Kateryna Hrishina |
+| **Itineraries** | `/api/itineraries` | Saved itinerary management (list, view, save) | Kateryna Hrishina |
+| **Teaser Cache** | — | Caches teaser results to avoid redundant OpenAI calls | Kateryna Hrishina |
+| **Itinerary Cache** | — | Caches full itineraries keyed by trip + preferences hash | Kateryna Hrishina |
 
-The backend will be organized into the following NestJS modules:
+## API Endpoints
 
-| Module | Purpose | Key Responsibilities |
-|--------|---------|---------------------|
-| **Trips** | Trip seed management | Create/update/delete trip seeds, store user-provided links and summaries |
-| **Planner** | Itinerary generation | Orchestrate LLM calls, manage agentic workflow, generate teaser and full itineraries |
-| **Estimator** | Cost calculations | Calculate budget estimates, provide cost breakdowns |
+### Auth — `/api/auth`
 
-### Planned Endpoints
+| Method | Route | Auth | Description |
+|--------|-------|------|-------------|
+| POST | `/api/auth/register` | Public | Register a new user. Returns JWT token + user object. |
+| POST | `/api/auth/login` | Public | Login with username/password. Returns JWT token + user object. |
 
-#### Trip Seeds
+### Trips — `/api/trips`
 
-| Route | Method | Purpose | Request Body | Response |
-|-------|--------|---------|--------------|----------|
-| `/api/trips/seed` | POST | Create trip seed from link | `{ url, summary?, preferences? }` | Trip seed object with initial metadata |
-| `/api/trips/:id` | GET | Get trip details | - | Trip seed + current itinerary status |
-| `/api/trips/:id` | PATCH | Update trip preferences | `{ preferences }` | Updated trip object |
-| `/api/trips/:id` | DELETE | Delete trip | - | Success confirmation |
+| Method | Route | Auth | Description |
+|--------|-------|------|-------------|
+| POST | `/api/trips/seed` | Public | Create a trip seed from a travel link. |
+| GET | `/api/trips` | Public | List all trip seeds (most recent first). |
+| GET | `/api/trips/:id` | Public | Get a single trip seed by UUID. |
+| PATCH | `/api/trips/:id` | Public | Partially update a trip seed. |
+| DELETE | `/api/trips/:id` | Public | Delete a trip seed (returns 204). |
 
-#### Planning & Itinerary
+### Planner — `/api/planner`
 
-| Route | Method | Purpose | Request Body | Response |
-|-------|--------|---------|--------------|----------|
-| `/api/planner/teaser` | POST | Generate teaser plan | `{ tripId }` | Quick 3-day teaser itinerary |
-| `/api/planner/full` | POST | Generate full itinerary | `{ tripId, preferences }` | Complete personalized itinerary |
+| Method | Route | Auth | Description |
+|--------|-------|------|-------------|
+| POST | `/api/planner/from-url` | Public | Extract trip metadata from a URL (scraper + OpenAI). |
+| POST | `/api/planner/teaser` | Optional JWT | Generate a 3-day teaser itinerary. Result cached. If JWT present, itinerary is linked to the user. |
+| POST | `/api/planner/full` | **JWT required** | Generate a full day-by-day itinerary with preferences. Result cached by trip + preferences hash. |
 
-#### Cost Estimation
+### Estimator — `/api/estimator`
 
-| Route | Method | Purpose | Request Body | Response |
-|-------|--------|---------|--------------|----------|
-| `/api/estimator/calculate` | POST | Get cost estimates | `{ itineraryId }` | Detailed cost breakdown |
+| Method | Route | Auth | Description |
+|--------|-------|------|-------------|
+| POST | `/api/estimator/calculate` | Public | Calculate a cost breakdown from a saved itinerary. Body: `{ itineraryId }`. |
 
-### LLM Integration Design
+### Itineraries — `/api/itineraries`
 
-#### LLM Provider Support
-
-- **Primary:** OpenAI GPT-4 / GPT-4o
-
-#### Agentic Workflow
-
-The planner will use a multi-step agentic approach:
-
-1. **Web Scraper Agent** - Extract metadata from user-provided link
-2. **Context Builder Agent** - Enrich location data (attractions, restaurants, weather)
-3. **Planner Agent** - Generate day-by-day itinerary using structured JSON schema
-4. **Consistency Engine** - Validate logical flow (deterministic, rule-based)
-5. **Cost Estimator Agent** - Calculate budget breakdown
-
-#### LLM Request/Response Schema
-
-**Standard Planner Request:**
-```json
-{
-  "location": "Paris, France",
-  "checkIn": "2026-05-01",
-  "checkOut": "2026-05-05",
-  "accommodation": {
-    "name": "Airbnb in Le Marais",
-    "address": "123 Rue de Rivoli"
-  },
-  "preferences": {
-    "interests": ["museums", "food", "architecture"],
-    "budget": "moderate",
-    "pace": "relaxed",
-    "dietary": []
-  }
-}
-```
-
-**Standard Planner Response:**
-```json
-{
-  "itinerary": {
-    "id": "uuid",
-    "tripId": "trip-uuid",
-    "days": [
-      {
-        "date": "2026-05-01",
-        "activities": [
-          {
-            "time": "09:00",
-            "duration": 120,
-            "title": "Visit Louvre Museum",
-            "description": "...",
-            "location": "...",
-            "estimatedCost": 25,
-            "bookingUrl": "..."
-          }
-        ]
-      }
-    ],
-    "totalEstimatedCost": {
-      "min": 450,
-      "max": 650,
-      "currency": "USD"
-    }
-  }
-}
-```
-
-See [api-contracts.md](./api-contracts.md) for full request/response specifications.
+| Method | Route | Auth | Description |
+|--------|-------|------|-------------|
+| GET | `/api/itineraries` | **JWT required** | List all saved itineraries for the current user. |
+| GET | `/api/itineraries/:id` | **JWT required** | Get full detail for one saved itinerary. |
+| POST | `/api/itineraries/:id/save` | **JWT required** | Mark an itinerary as saved ("Add to My Itineraries"). |
 
 ## Technology Stack
 
-- **Framework:** NestJS (TypeScript)
-- **Database ORM:** TypeORM or Prisma (TBD)
-- **LLM Client:** OpenAI SDK
+- **Framework:** NestJS 11, TypeScript
+- **Database ORM:** TypeORM 0.3
+- **LLM Client:** OpenAI SDK 6
+- **Auth:** Passport.js, `@nestjs/jwt`, bcrypt
 - **Validation:** class-validator, class-transformer
+- **Web Scraping:** Cheerio
 - **Testing:** Jest, Supertest
-- **Documentation:** Swagger/OpenAPI
+- **Code Quality:** ESLint, Prettier
 
-## Development Setup (To Be Implemented)
+## Environment Variables
 
-```bash
-# Install dependencies
-cd backend
-npm install
-
-# Set up environment variables
-cp .env.example .env
-# Edit .env with your API keys
-
-# Run database migrations
-npm run migration:run
-
-# Start development server
-npm run start:dev
-
-# Run tests
-npm run test
-```
-
-## Environment Variables (Planned)
+Copy `.env.example` to `.env` and fill in your values:
 
 ```env
-DATABASE_URL=postgresql://user:password@localhost:5432/link2itinerary
-OPENAI_API_KEY=sk-...
+# Server
 PORT=3000
+
+# Supabase PostgreSQL
+DATABASE_URL=postgresql://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:6543/postgres
+
+# OpenAI (required for Planner module)
+OPENAI_API_KEY=sk-your-key-here
+
+# JWT secret (can be any long random string; default dev secret is used if omitted)
+JWT_SECRET=your-secret-here
 ```
 
-## Directory Structure (Planned)
+## Directory Structure
 
 ```
-backend/
-├── src/
-│   ├── trips/              # Trip seeds module
-│   ├── planner/            # Itinerary planner module
-│   ├── estimator/          # Cost estimator module
-│   ├── common/             # Shared utilities
-│   ├── database/           # Database config
-│   └── main.ts             # App entry point
-├── test/                   # E2E tests
-├── package.json
-└── tsconfig.json
+backend/src/
+├── auth/                        # Auth module (register, login, JWT guards)
+│   ├── dto/                     #   Register/Login DTOs
+│   ├── guards/                  #   JwtAuthGuard, OptionalJwtAuthGuard
+│   ├── strategies/              #   JWT strategy
+│   ├── auth.controller.ts
+│   ├── auth.service.ts
+│   └── auth.module.ts
+├── trips/                       # Trip seeds module (CRUD)
+│   ├── dto/
+│   ├── entities/trip-seed.entity.ts
+│   ├── trips.controller.ts
+│   ├── trips.service.ts
+│   └── trips.module.ts
+├── planner/                     # Itinerary generation module
+│   ├── dto/
+│   ├── types/
+│   ├── planner.controller.ts
+│   ├── planner.service.ts
+│   └── planner.module.ts
+├── estimator/                   # Cost estimation module
+│   ├── dto/
+│   ├── types/
+│   ├── estimator.controller.ts
+│   ├── estimator.service.ts
+│   └── estimator.module.ts
+├── itineraries/                 # Saved itinerary management
+│   ├── itineraries.controller.ts
+│   ├── itineraries.service.ts
+│   └── itineraries.module.ts
+├── teaser-cache/                # Caches teaser OpenAI responses
+│   ├── entities/teaser-cache.entity.ts
+│   └── teaser-cache.module.ts
+├── itinerary-cache/             # Caches full itinerary responses
+│   ├── entities/itinerary-cache.entity.ts
+│   └── itinerary-cache.module.ts
+├── users/                       # User management (service only)
+│   ├── entities/user.entity.ts
+│   ├── users.service.ts
+│   └── users.module.ts
+├── common/ids.ts                # Shared UUID utilities
+├── app.module.ts                # Root module (TypeORM config, global imports)
+└── main.ts                      # Entry point (starts server on PORT)
 ```
 
-## Next Steps
+## Development Setup
 
-1. Initialize NestJS project: `nest new backend`
-2. Set up database connection and migrations
-3. Implement trip seeds CRUD
-4. Integrate OpenAI API for basic planning
-5. Build consistency validation engine
-6. Add cost estimation logic
+```bash
+cd backend
+npm install
+cp .env.example .env
+# Edit .env with your values
+npm run start:dev
+```
+
+Server starts at **http://localhost:3000** with hot reload.
+
+See [GETTING-STARTED.md](./GETTING-STARTED.md) for detailed instructions and troubleshooting.
+
+## Useful Commands
+
+| Command | Description |
+|---------|-------------|
+| `npm run start:dev` | Start dev server with hot reload |
+| `npm run build` | Compile TypeScript |
+| `npm run start:prod` | Run compiled production build |
+| `npm run test` | Run unit tests |
+| `npm run test:e2e` | Run end-to-end tests |
+| `npm run lint` | Check code style |
+| `npm run format` | Auto-format with Prettier |
+
+See [api-contracts.md](./api-contracts.md) for full request/response specifications.

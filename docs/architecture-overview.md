@@ -441,7 +441,7 @@ See [db/schema-plan.md](../db/schema-plan.md) for detailed schema.
 ### Infrastructure
 - **Hosting:** Vercel (frontend), Railway/AWS (backend)
 - **CI/CD:** GitHub Actions
-- **Monitoring:** (TBD, maybe Sentry for errors)
+- **Monitoring:** Not configured for MVP
 
 ---
 

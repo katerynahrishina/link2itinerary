@@ -1,250 +1,133 @@
-# Frontend - Link2Itinerary UI
+# Frontend — Link2Itinerary UI
 
-**About this file:** This README covers the frontend React application that users interact with. It outlines the five main pages (Landing, Trip Seed Wizard, Teaser View, Preferences Wizard, and Itinerary View), explains the component architecture, describes how data flows between the UI and backend API, and provides setup instructions. If you're building the user interface, components, or working on the user experience, start here.
+React/Vite web application for Link2Itinerary. Provides the full user-facing experience from landing to viewing and saving AI-generated travel itineraries.
 
-React-based web application providing an intuitive interface for creating, customizing, and viewing AI-generated travel itineraries.
+## Pages
 
-## Planned Pages
+### 1. Landing Page
+**Route:** `/`
 
-### 1. Landing / Home Page
-- Hero section with value proposition
-- Quick demo or sample itinerary
-- "Get Started" CTA leading to Trip Seed Wizard
-- Feature highlights (LLM-powered, budget-aware)
+Hero section with the project pitch, a "Get Started" CTA, and feature highlights.
 
-### 2. Trip Seed Wizard
+### 2. Login Page
+**Route:** `/login`
+
+Combined register/login form. Submits to `/api/auth/register` or `/api/auth/login`. On success, stores the JWT in `localStorage` under `link2itinerary.auth.token` and updates `AuthContext`.
+
+### 3. Trip Seed Page
 **Route:** `/create/seed`
 
-**Purpose:** Collect initial trip information from user
+Collects trip details: travel link URL, destination, check-in/check-out dates, accommodation name and type. Submits to `POST /api/trips/seed`.
 
-**Components:**
-- URL input field (paste Airbnb/hotel/attraction link)
-- Optional summary text area
-- Link validation and metadata preview
-- "Generate Teaser" button
-
-**Data Flow:**
-- POST `/api/trips/seed` with URL and summary
-- Display loading state during scraping
-- Show extracted metadata (location, dates, accommodation name)
-- Auto-navigate to Teaser View on success
-
-### 3. Teaser View Page
+### 4. Teaser Page
 **Route:** `/trips/:id/teaser`
 
-**Purpose:** Show quick 3-day overview to engage user
+Calls `POST /api/planner/teaser` with the trip ID. Displays a 3-day overview with themes, highlights, and a cost estimate range. Includes a teaser popup modal with trip summary details.
 
-**Components:**
-- Header with trip location and dates
-- Three daily cards with themes and highlights
-- Estimated cost range badge
-- "Customize & Get Full Plan" button → Preferences Wizard
-- "Start Over" button
-
-**Data Flow:**
-- GET `/api/trips/:id` for trip details
-- POST `/api/planner/teaser` to generate teaser
-- Display loading skeleton during generation
-
-### 4. Preferences Wizard
+### 5. Preferences Page
 **Route:** `/trips/:id/preferences`
 
-**Purpose:** Collect detailed user preferences for personalized itinerary
+Multi-step form for collecting: interests (museums, food, nightlife, nature, etc.), budget tier, travel pace, dietary restrictions, and accessibility needs. On submit, navigates to the Generating page.
 
-**Components:**
-- Multi-step form:
-  - Step 1: Interests (museums, food, nightlife, nature, etc.)
-  - Step 2: Budget preference (for cost estimation)
-  - Step 3: Travel pace (relaxed/moderate/packed)
-  - Step 4: Dietary restrictions and accessibility needs
-- Progress indicator
-- Back/Next navigation
-- "Generate Itinerary" final button
+### 6. Generating Page
+**Route:** `/trips/:id/generating`
 
-**Data Flow:**
-- PATCH `/api/trips/:id` to save preferences
-- POST `/api/planner/full` to generate complete itinerary
-- Navigate to Itinerary View on completion
+Loading state shown while `POST /api/planner/full` runs. Displays a progress animation while waiting for the OpenAI response.
 
-### 5. Itinerary View Page
+### 7. Itinerary Page
 **Route:** `/trips/:id/itinerary`
 
-**Purpose:** Display complete day-by-day itinerary
+Full day-by-day itinerary view. Shows activities with times, descriptions, and cost estimates. Includes a cost breakdown section. If the user is logged in, an "Add to My Itineraries" button calls `POST /api/itineraries/:id/save`.
 
-**Components:**
-- Trip header (location, dates, cost summary)
-- Day-by-day accordion or tab navigation
-- Activity cards with:
-  - Time, duration, title
-  - Description and location
-  - Estimated cost
-  - Booking link (if available)
-  - Map preview
-- Cost breakdown sidebar
+### 8. My Itineraries Page
+**Route:** `/my-itineraries`
 
-**Data Flow:**
-- GET `/api/trips/:id` to fetch itinerary
-- POST `/api/estimator/calculate` for cost breakdown
+Protected route (requires login). Lists all itineraries the user has saved, pulled from `GET /api/itineraries`. Includes a teaser popup modal for quick preview.
 
-## Component Architecture
+### 9. Saved Itinerary Page
+**Route:** `/my-itineraries/:id`
 
-### Core Components
+Protected route. Read-only view of a single saved itinerary, loaded from `GET /api/itineraries/:id`.
+
+## Directory Structure
 
 ```
-src/
+frontend/src/
+├── pages/
+│   ├── LandingPage.tsx
+│   ├── LoginPage.tsx
+│   ├── TripSeedPage.tsx
+│   ├── TeaserPage.tsx
+│   ├── PreferencesPage.tsx
+│   ├── GeneratingPage.tsx
+│   ├── ItineraryPage.tsx
+│   ├── MyItinerariesPage.tsx
+│   └── SavedItineraryPage.tsx
 ├── components/
-│   ├── common/
-│   │   ├── Header.tsx
-│   │   ├── Footer.tsx
-│   │   ├── Button.tsx
-│   │   ├── LoadingSpinner.tsx
-│   │   └── ErrorBoundary.tsx
-│   ├── trip-seed/
-│   │   ├── URLInputForm.tsx
-│   │   ├── MetadataPreview.tsx
-│   │   └── LinkValidator.tsx
-│   ├── teaser/
-│   │   ├── TeaserCard.tsx
-│   │   ├── DayHighlights.tsx
-│   │   └── CostBadge.tsx
-│   ├── preferences/
-│   │   ├── PreferencesForm.tsx
-│   │   ├── InterestSelector.tsx
-│   │   └── ProgressIndicator.tsx
-│   ├── itinerary/
-│   │   ├── ItineraryHeader.tsx
-│   │   ├── DayAccordion.tsx
-│   │   ├── ActivityCard.tsx
-│   │   └── CostBreakdown.tsx
+│   ├── ProtectedRoute.tsx           # Redirects to /login if no auth token
+│   └── common/
+│       ├── AppHeader.tsx
+│       ├── AppFooter.tsx
+│       ├── LoadingState.tsx
+│       └── ErrorState.tsx
+├── context/
+│   ├── AuthContext.tsx              # Auth state (user, token, login/logout)
+│   └── TripContext.tsx              # Current trip state
+├── services/
+│   ├── api.ts                       # Live API calls (fetch + JWT headers)
+│   └── mocks.ts                     # Mock responses for development
+├── types/
+│   └── api.ts                       # TypeScript types for all API shapes
+├── App.tsx                          # Router setup and route definitions
+└── main.tsx                         # Entry point
 ```
 
-### State Management
+## State Management
 
-**Approach:** React Context API + Custom Hooks (or Redux Toolkit if needed)
+**Auth:** `AuthContext` stores the current user and JWT. The token is persisted to `localStorage` under `link2itinerary.auth.token`. `ProtectedRoute` wraps pages that require login.
 
-**Planned Contexts:**
-- `TripContext` - Current trip data
-- `ItineraryContext` - Current itinerary
-- `PreferencesContext` - User preferences
-- `UIContext` - Loading states, modals, toasts
+**Trip flow:** `TripContext` holds the current trip seed data as the user progresses through the creation flow.
 
-**Custom Hooks:**
-- `useTripSeed()` - Manage trip seed creation
-- `useItinerary()` - Fetch itineraries
-- `useCostEstimate()` - Calculate costs
+## API Service Layer
 
-## Data Flow Summary
+All backend calls go through `services/api.ts`. A `VITE_USE_MOCKS=true` environment variable switches to the mock implementations in `services/mocks.ts` — useful for frontend development without a running backend.
 
-```
-1. User pastes link
-   → URLInputForm
-   → POST /api/trips/seed
-   → MetadataPreview
-
-2. User views teaser
-   → TeaserCard
-   → POST /api/planner/teaser
-   → Navigate to Preferences Wizard
-
-3. User sets preferences
-   → PreferencesForm
-   → PATCH /api/trips/:id
-   → POST /api/planner/full
-   → Navigate to Itinerary View
-
-4. User views itinerary
-   → DayAccordion + ActivityCard
-   → GET /api/trips/:id
-   → POST /api/estimator/calculate
-   → Display itinerary with cost breakdown
-```
+Protected endpoints (planner/full, itineraries) automatically attach the JWT from `localStorage` in the `Authorization: Bearer` header.
 
 ## Technology Stack
 
-- **Framework:** React 18+ with TypeScript
-- **Routing:** React Router v6
-- **State Management:** React Context API (or Redux Toolkit)
-- **Styling:** Tailwind CSS or Material-UI (TBD)
-- **HTTP Client:** Axios or Fetch API
-- **Form Handling:** React Hook Form
-- **Validation:** Zod or Yup
-- **Date Handling:** date-fns or Day.js
-- **Maps:** Google Maps API or Mapbox (for location previews)
-- **Testing:** Vitest, React Testing Library
-- **Build Tool:** Vite
+- **Framework:** React 18, TypeScript
+- **Build Tool:** Vite 5
+- **Routing:** React Router v7
+- **Testing:** Vitest
+- **Linting:** ESLint
 
-## Development Setup (To Be Implemented)
+## Development Setup
 
 ```bash
-# Install dependencies
 cd frontend
 npm install
-
-# Set up environment variables
-cp .env.example .env
-# Edit .env with API base URL
-
-# Start development server
-npm run dev
-
-# Run tests
-npm run test
-
-# Build for production
-npm run build
 ```
 
-## Environment Variables (Planned)
+Create `frontend/.env`:
 
 ```env
 VITE_API_BASE_URL=http://localhost:3000/api
-VITE_GOOGLE_MAPS_API_KEY=your-maps-key
+VITE_USE_MOCKS=false
 ```
 
-## Directory Structure (Planned)
+Start the dev server (runs at http://localhost:5173):
 
-```
-frontend/
-├── public/
-│   └── favicon.ico
-├── src/
-│   ├── components/       # React components
-│   ├── pages/            # Page components
-│   ├── hooks/            # Custom hooks
-│   ├── context/          # React contexts
-│   ├── services/         # API clients
-│   ├── utils/            # Utilities
-│   ├── types/            # TypeScript types
-│   ├── styles/           # Global styles
-│   ├── App.tsx
-│   └── main.tsx
-├── package.json
-├── vite.config.ts
-└── tsconfig.json
+```bash
+npm run dev
 ```
 
-## Design System (To Be Defined)
+Other commands:
 
-- **Primary Color:** Blue/Teal (travel theme)
-- **Secondary Color:** Orange/Coral (call-to-action)
-- **Typography:** Modern sans-serif (Inter, Outfit, or similar)
-- **Spacing:** 8px grid system
-- **Breakpoints:** Mobile-first responsive design
-
-## Accessibility Considerations
-
-- Semantic HTML elements
-- ARIA labels for interactive elements
-- Keyboard navigation support
-- Screen reader compatibility
-- Color contrast compliance (WCAG AA)
-
-## Next Steps
-
-1. Initialize React project: `npm create vite@latest frontend -- --template react-ts`
-2. Set up routing and basic page structure
-3. Create design system / component library
-4. Implement Trip Seed Wizard
-5. Build Teaser View
-6. Implement Preferences Wizard
-7. Build Itinerary View with cost breakdown
+| Command | Description |
+|---------|-------------|
+| `npm run dev` | Start dev server with hot reload |
+| `npm run build` | Production build |
+| `npm run preview` | Preview the production build |
+| `npm run test` | Run unit tests with Vitest |
+| `npm run lint` | Check code style |
